@@ -1,4 +1,6 @@
-﻿// Upgrade NOTE: replaced '_Object2World' with 'unity_ObjectToWorld'
+﻿// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
+
+// Upgrade NOTE: replaced '_Object2World' with 'unity_ObjectToWorld'
 
 Shader "Unlit/Cloud"
 {
@@ -18,8 +20,8 @@ Shader "Unlit/Cloud"
 		// premultiplied alpha
 		//    sourcefactor * generated color + destinationfactor * back color
 		//   srcfct	dstfct
-		Blend One OneMinusSrcAlpha 
-		// no cull  no write to depth   always draw objects irrespective of depth
+		Blend One SrcAlpha 
+		// no cull  no write to depth   always draw objects (behind and ahead) irrespective of depth
 		Cull Off ZWrite Off Ztest Always
 		Pass
 		{
@@ -53,7 +55,9 @@ Shader "Unlit/Cloud"
 				// if(biggestMin < smallestMax)
 				//	return -1.0;
 				float2 distances = 0;
+				// distance to box
 				distances.x = max(0, biggestMin);
+				// distance inside box
 				distances.y = max(0, smallestMax - distances.x);
 				return distances;
 			}
@@ -114,13 +118,15 @@ Shader "Unlit/Cloud"
 				// phase(cos(x)) is like e^x, so bigger in positives and smaller in negatives
 				float cosT = -dot(rayDirection, LIGHT_DIRECTION); 
 				float scattering = phase(cosT);
-				float lastTransmittance = 0.0;
+				// how much of light is transmitted
+				float lastTransmittance = 1.0;
 				float accumExtinction = 1.0;
 				float accumDensity = 0.0;
 				float3 currentPoint;
 				float density;
 				int hitLimit = 100000;
 				int hits = 0;
+				//distanceInsideOBB = 1;
 				for (float i = 0.0;  i < distanceInsideOBB; i += stepSize) {
 					currentPoint = rayOrigin + rayDirection * (distanceToOBB + i);
 					density = sampleDensity(currentPoint);
@@ -153,6 +159,7 @@ Shader "Unlit/Cloud"
 				float4 position : SV_POSITION;
 				float2 uv : TEXCOORD0;
 				float4 worldPosition : TEXCOORD2;
+				float4 wea : TEXCOORD1;
 			};
 
 			v2f vert(appdata v)
@@ -160,6 +167,7 @@ Shader "Unlit/Cloud"
 				v2f o;
 				// Vertex shader output
 				o.position = UnityObjectToClipPos(v.vertex);
+				o.wea = o.position;
 				o.uv = v.uv;
 				// UnityWorldSpaceViewDir computes vector from vertex to camera
 				// Pass it to TEXCOORD0 to interpolate it along the triangle
@@ -167,26 +175,37 @@ Shader "Unlit/Cloud"
 				return o;
 			}
 
+			// declared to access the main camera's depth texture
+			sampler2D _CameraDepthTexture;
+
 			fixed4 frag(v2f i) : SV_Target
 			{
 				//put transmittance on light integrator!
 				// Get the ray data for this specific fragment
 				
 				float3 rayOrigin = _WorldSpaceCameraPos;
+				float3 viewDirection = normalize(UNITY_MATRIX_IT_MV[2].xyz);
+
 				float3 rayDirection = normalize(i.worldPosition - _WorldSpaceCameraPos);
+
 				float2 oBBDistances = oBBDistance(rayOrigin, rayDirection);
 				//fixed4 color = tex2D(_MainTex, i.uv);
-				float2 wea = integrateVolume(oBBDistances.x, oBBDistances.y, 0.001, rayOrigin, rayDirection);
-				//fixed4 color = { wea, wea, wea, 1 };
-				fixed4 color = 0;// tex2D(_MainTex, i.uv);
-				// light in volume + color at end of ray * transmittance of whole volume
+				float depth = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, float2(i.position.x/_ScreenParams.x, i.position.y/_ScreenParams.y)));
+		
+				// get a vector along the ray direction that would have depth of 1 in the view space
+				// then multiply it by the depth (to get the actual position) and get its length
+				float distance = length(rayDirection / length(dot(rayDirection, viewDirection)) * depth);			
+				float rayDistance = min(distance - oBBDistances.x, oBBDistances.y);
 			
+				float2 wea = integrateVolume(oBBDistances.x, rayDistance, 0.001, rayOrigin, rayDirection);
+				fixed4 color = 0;
 				color.r = wea.x;
 				color.g = wea.x;
 				color.b = wea.x;
+				color.a = wea.y;
 				return color;
 			}
-			ENDCG
+			ENDCG	
 		}
 	}
 }
